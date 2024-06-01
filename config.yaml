@@ -1,0 +1,22 @@
+video_extensions:
+  - .ts
+  - .wmv
+  - .asf
+  - .asx
+  - .rm
+  - .rmvb
+  - .mp4
+  - .3gp
+  - .mov
+  - .m4v
+  - .avi
+  - .dat
+  - .mkv
+  - .flv
+  - .vob
+  - .m2ts
+
+decode_params: ''
+# -hwaccel dxva2
+
+encode_params: -c:v libx265 -preset fast -crf 21 -vf scale=1920:1080 -x265-params min-keyint=5:bframes=4:scenecut=50:open-gop=0:rc-lookahead=40:lookahead-slices=0:me=hex:subme=2:merange=57:ref=3:max-merge=3:no-strong-intra-smoothing=1:no-sao=1:selective-sao=0 -pix_fmt yuv420p10le -c:a copy
