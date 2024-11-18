@@ -1,6 +1,7 @@
 import os
 import shutil
 import yaml
+import subprocess
 
 # 默认的源文件夹路径和目标文件夹路径
 source_folder = 'input'
@@ -13,6 +14,19 @@ with open('config.yaml', encoding='utf-8') as config_file:
 video_extensions = config['video_extensions']
 ffmpeg_params = config['encode_params']
 input_params = config['decode_params']
+
+# 读取配置文件中的分辨率阈值
+max_pixels = config['resolution_threshold']  # 从配置文件中获取最大像素值
+
+def get_video_resolution(video_path):
+    """获取视频分辨率"""
+    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', video_path]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    resolution = result.stdout.strip()
+    if resolution:
+        width, height = map(int, resolution.split('x'))
+        return width, height
+    return None, None
 
 def check_existing_video(target_folder, video_name, video_ext):
     # 检查目标文件夹中是否存在同名的完整视频文件
@@ -39,12 +53,39 @@ def process_video(video_path, target_folder):
         print(f"已存在完整视频文件，跳过转码：{video_path}")
         return
     
+    # 获取视频分辨率
+    video_width, video_height = get_video_resolution(video_path)
+    if video_width and video_height:
+        print(f"视频分辨率：{video_width}x{video_height}")
+    
+    # 计算视频的像素总数
+    video_pixels = video_width * video_height
+    
+    # 如果视频像素总数大于目标像素值，则按比例缩放
+    if video_pixels > max_pixels:
+        # 计算缩放比例，使得新的像素总数小于或等于最大像素值
+        scale_factor = (max_pixels / video_pixels) ** 0.5  # 按比例缩放，保持长宽比
+        new_width = int(video_width * scale_factor)
+        new_height = int(video_height * scale_factor)
+        print(f"视频像素总数大于 {max_pixels}，按比例缩放至 {new_width}x{new_height}")
+        
+        # 使用 ffmpeg 的 scale 参数进行缩放
+        scale_filter = f"scale={new_width}:{new_height}"
+    else:
+        # 如果视频像素总数小于等于目标值，不做更改
+        scale_filter = None
+    
     # 定义转码后的文件名和路径，加上 .part 后缀
     target_video_name = video_name + '_part' + '.mp4'
     target_video_path = os.path.join(target_subfolder, target_video_name)
     
+    # 构建ffmpeg命令
+    cmd = f'ffmpeg {input_params} -i "{video_path}"'
+    if scale_filter:
+        cmd += f' -vf "{scale_filter}"'
+    cmd += f' -y {ffmpeg_params} "{target_video_path}"'
+    
     # 使用os.system执行ffmpeg命令
-    cmd = f'ffmpeg {input_params} -i "{video_path}" -y {ffmpeg_params} "{target_video_path}"'
     os.system(cmd)
     
     print(f"已转码 {video_path} 到 {target_video_path}")
