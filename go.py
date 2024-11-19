@@ -18,6 +18,9 @@ input_params = config['decode_params']
 # 读取配置文件中的分辨率阈值
 max_pixels = config['resolution_threshold']  # 从配置文件中获取最大像素值
 
+# 长宽比容差值，用于判断是否为16:9或9:16
+aspect_ratio_tolerance = 0.1
+
 def get_video_resolution(video_path):
     """获取视频分辨率"""
     cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', video_path]
@@ -61,18 +64,27 @@ def process_video(video_path, target_folder):
     # 计算视频的像素总数
     video_pixels = video_width * video_height
     
-    # 如果视频像素总数大于目标像素值，则按比例缩放
+    # 计算视频的长宽比
+    aspect_ratio = video_width / video_height
+    aspect_ratio_reverse = video_height / video_width  # 反向长宽比（9:16）
+
+    # 如果视频长宽比接近16:9且像素大于最大值，则直接转码为1920x1080
     if video_pixels > max_pixels:
-        # 计算缩放比例，使得新的像素总数小于或等于最大像素值
-        scale_factor = (max_pixels / video_pixels) ** 0.5  # 按比例缩放，保持长宽比
-        new_width = int(video_width * scale_factor)
-        new_height = int(video_height * scale_factor)
-        print(f"视频像素总数大于 {max_pixels}，按比例缩放至 {new_width}x{new_height}")
-        
-        # 使用 ffmpeg 的 scale 参数进行缩放
-        scale_filter = f"scale={new_width}:{new_height}"
+        if abs(aspect_ratio - (16 / 9)) < aspect_ratio_tolerance:
+            print(f"视频长宽比接近16:9，按 1920x1080 转码")
+            scale_filter = "scale=1920:1080"
+        elif abs(aspect_ratio_reverse - (16 / 9)) < aspect_ratio_tolerance:
+            print(f"视频长宽比接近9:16，按 1080x1920 转码")
+            scale_filter = "scale=1080:1920"
+        else:
+            scale_filter = None
+            # 按比例缩放
+            scale_factor = (max_pixels / video_pixels) ** 0.5  # 按比例缩放，保持长宽比
+            new_width = int(video_width * scale_factor)
+            new_height = int(video_height * scale_factor)
+            print(f"视频像素总数大于 {max_pixels}，按比例缩放至 {new_width}x{new_height}")
+            scale_filter = f"scale={new_width}:{new_height}"
     else:
-        # 如果视频像素总数小于等于目标值，不做更改
         scale_filter = None
     
     # 定义转码后的文件名和路径，加上 .part 后缀
