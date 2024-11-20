@@ -31,12 +31,20 @@ def get_video_resolution(video_path):
         return width, height
     return None, None
 
+# def check_existing_video(target_folder, video_name, video_ext):
+#     # 检查目标文件夹中是否存在同名的完整视频文件
+#     for root, _, files in os.walk(target_folder):
+#         for file in files:
+#             if file.startswith(video_name) and file.endswith(video_ext) and not file.endswith('_part' + video_ext):
+#                 return True
+#     return False
+
 def check_existing_video(target_folder, video_name, video_ext):
-    # 检查目标文件夹中是否存在同名的完整视频文件
+    """检查目标文件夹中是否存在完整的目标视频文件"""
+    expected_filename = f"{video_name}{video_ext}"
     for root, _, files in os.walk(target_folder):
-        for file in files:
-            if file.startswith(video_name) and file.endswith(video_ext) and not file.endswith('_part' + video_ext):
-                return True
+        if expected_filename in files:
+            return True
     return False
 
 def process_video(video_path, target_folder):
@@ -50,7 +58,7 @@ def process_video(video_path, target_folder):
     
     # 获取视频文件名和扩展名
     video_name, video_ext = os.path.splitext(os.path.basename(video_path))
-    
+
     # 检查目标路径是否已经存在完整视频文件
     if check_existing_video(target_subfolder, video_name, video_ext):
         print(f"已存在完整视频文件，跳过转码：{video_path}")
