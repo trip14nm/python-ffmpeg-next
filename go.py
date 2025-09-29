@@ -2,6 +2,7 @@ import os
 import shutil
 import yaml
 import subprocess
+import json
 
 # 默认的源文件夹路径和目标文件夹路径
 source_folder = 'input'
@@ -20,17 +21,31 @@ ignore_files = config['ignore_files']
 max_pixels = config['resolution_threshold']
 aspect_ratio_tolerance = 0.1
 
-
 def get_video_resolution(video_path):
-    """获取视频分辨率"""
+    """使用 ffprobe 获取视频分辨率 (JSON 模式)"""
+    # 使用 -select_streams v:0 确保只选择第一个视频流
     cmd = [
         'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', video_path
+        '-show_entries', 'stream=width,height', 
+        '-of', 'json', # 使用 JSON 格式
+        video_path
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode == 0:
-        width, height = map(int, result.stdout.strip().split('x'))
-        return width, height
+    
+    if result.returncode == 0 and result.stdout:
+        try:
+            data = json.loads(result.stdout)
+            # 查找视频流信息
+            if 'streams' in data and data['streams']:
+                # 假设第一个流是视频流
+                stream = data['streams'][0]
+                width = stream.get('width')
+                height = stream.get('height')
+                if width is not None and height is not None:
+                    return int(width), int(height)
+        except (json.JSONDecodeError, IndexError, ValueError) as e:
+            print(f"解析 ffprobe JSON 输出失败: {e}")
+            
     return None, None
 
 
