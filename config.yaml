@@ -16,6 +16,10 @@ video_extensions:
   - .vob
   - .m2ts
 
+ignore_files:
+  - 'Thumbs.db'
+  - '.DS_Store'
+
 resolution_threshold: 2073600  # 1920x1080的像素数
 
 decode_params: ''

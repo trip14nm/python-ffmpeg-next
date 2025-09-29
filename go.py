@@ -14,20 +14,25 @@ with open('config.yaml', encoding='utf-8') as config_file:
 video_extensions = config['video_extensions']
 ffmpeg_params = config['encode_params']
 input_params = config['decode_params']
+ignore_files = config['ignore_files']
 
 # 分辨率阈值和长宽比容差
 max_pixels = config['resolution_threshold']
 aspect_ratio_tolerance = 0.1
 
+
 def get_video_resolution(video_path):
     """获取视频分辨率"""
-    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-           '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', video_path]
+    cmd = [
+        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0', video_path
+    ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode == 0:
         width, height = map(int, result.stdout.strip().split('x'))
         return width, height
     return None, None
+
 
 def check_existing_video(target_folder, video_name, video_ext):
     """检查目标文件夹中是否存在完整的目标视频文件"""
@@ -36,6 +41,7 @@ def check_existing_video(target_folder, video_name, video_ext):
         if expected_filename in files:
             return True
     return False
+
 
 def process_video(video_path, target_folder):
     # 处理路径结构
@@ -87,6 +93,7 @@ def process_video(video_path, target_folder):
     if scale_filter:
         vf_components.append(scale_filter)
     if subs_exists:
+        # ffmpeg 字幕路径转义
         subs_path_ffmpeg = subs_path.replace('\\', '/').replace(':', '\\:')
         vf_components.append(f"subtitles='{subs_path_ffmpeg}'")
         print(f"检测到字幕文件: {subs_path}")
@@ -116,17 +123,32 @@ def process_video(video_path, target_folder):
     print(f"转码完成: {final_output}\n")
 
 # 主处理流程
-default_source = os.path.join(os.getcwd(), source_folder)
-for root, dirs, files in os.walk(default_source):
-    for file in files:
-        path = os.path.join(root, file)
-        if any(file.endswith(ext) for ext in video_extensions):
-            process_video(path, target_folder)
-        else:
-            rel_path = os.path.relpath(root, default_source)
-            target_dir = os.path.join(target_folder, rel_path)
-            os.makedirs(target_dir, exist_ok=True)
-            shutil.copy2(path, target_dir)
+if __name__ == '__main__':
+    default_source = os.path.join(os.getcwd(), source_folder)
+    used_subtitles = set()  # 记录已被内嵌的视频字幕文件
 
-print("所有处理已完成！")
-os.system('pause')
+    for root, dirs, files in os.walk(default_source):
+        for file in files:
+            path = os.path.join(root, file)
+            # 视频文件处理
+            if any(file.endswith(ext) for ext in video_extensions):
+                process_video(path, target_folder)
+                # 记录已用字幕
+                video_name, _ = os.path.splitext(file)
+                subs_path = os.path.join(root, f"{video_name}.ass")
+                if os.path.isfile(subs_path):
+                    used_subtitles.add(os.path.abspath(subs_path))
+            else:
+                # 跳过忽略文件
+                if file in ignore_files:
+                    continue
+                # 跳过已被合并的字幕文件
+                if os.path.abspath(path) in used_subtitles:
+                    continue
+                # 复制其他文件
+                rel_path = os.path.relpath(root, default_source)
+                target_dir = os.path.join(target_folder, rel_path)
+                os.makedirs(target_dir, exist_ok=True)
+                shutil.copy2(path, target_dir)
+
+    print("所有处理已完成！")
