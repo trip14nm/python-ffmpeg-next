@@ -3,6 +3,8 @@ import shutil
 import yaml
 import subprocess
 import json
+import logging
+from datetime import datetime
 
 # 默认的源文件夹路径和目标文件夹路径
 source_folder = 'input'
@@ -12,40 +14,51 @@ target_folder = 'output'
 with open('config.yaml', encoding='utf-8') as config_file:
     config = yaml.safe_load(config_file)
 
-video_extensions = config['video_extensions']
+video_extensions = [ext.lower() for ext in config['video_extensions']]  # normalize to lowercase
 ffmpeg_params = config['encode_params']
 input_params = config['decode_params']
-ignore_files = config['ignore_files']
+ignore_files = [f.lower() for f in config['ignore_files']]  # normalize to lowercase
 
 # 分辨率阈值和长宽比容差
 max_pixels = config['resolution_threshold']
 aspect_ratio_tolerance = 0.1
 
+# 日志配置
+log_filename = datetime.now().strftime("process_%Y%m%d_%H%M%S.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler(log_filename, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger()
+
+
 def get_video_resolution(video_path):
     """使用 ffprobe 获取视频分辨率 (JSON 模式)"""
-    # 使用 -select_streams v:0 确保只选择第一个视频流
     cmd = [
         'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height', 
-        '-of', 'json', # 使用 JSON 格式
+        '-show_entries', 'stream=width,height',
+        '-of', 'json',
         video_path
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
+
     if result.returncode == 0 and result.stdout:
         try:
             data = json.loads(result.stdout)
-            # 查找视频流信息
             if 'streams' in data and data['streams']:
-                # 假设第一个流是视频流
                 stream = data['streams'][0]
                 width = stream.get('width')
                 height = stream.get('height')
                 if width is not None and height is not None:
                     return int(width), int(height)
         except (json.JSONDecodeError, IndexError, ValueError) as e:
-            print(f"解析 ffprobe JSON 输出失败: {e}")
-            
+            log.error(f"解析 ffprobe JSON 输出失败: {e}")
+
     return None, None
 
 
@@ -58,6 +71,15 @@ def check_existing_video(target_folder, video_name, video_ext):
     return False
 
 
+def find_subtitle(video_dir, video_name):
+    """Case-insensitive search for a matching .ass subtitle file"""
+    for f in os.listdir(video_dir):
+        name, ext = os.path.splitext(f)
+        if name.lower() == video_name.lower() and ext.lower() == '.ass':
+            return os.path.join(video_dir, f)
+    return None
+
+
 def process_video(video_path, target_folder):
     # 处理路径结构
     relative_path = os.path.relpath(os.path.dirname(video_path), source_folder)
@@ -66,21 +88,21 @@ def process_video(video_path, target_folder):
 
     # 提取视频信息
     video_name, video_ext = os.path.splitext(os.path.basename(video_path))
-    
-    # 检查字幕文件
+
+    # 检查字幕文件 (case-insensitive)
     video_dir = os.path.dirname(video_path)
-    subs_path = os.path.join(video_dir, f"{video_name}.ass")
-    subs_exists = os.path.isfile(subs_path)
+    subs_path = find_subtitle(video_dir, video_name)
+    subs_exists = subs_path is not None
 
     # 跳过已存在文件
     if check_existing_video(target_subfolder, video_name, '.mp4'):
-        print(f"跳过已存在文件: {video_path}")
+        log.info(f"跳过已存在文件: {video_path}")
         return
 
     # 获取分辨率
     width, height = get_video_resolution(video_path)
     if not width or not height:
-        print(f"无法获取分辨率: {video_path}")
+        log.warning(f"无法获取分辨率: {video_path}")
         return
 
     # 分辨率处理逻辑
@@ -92,70 +114,74 @@ def process_video(video_path, target_folder):
     if pixels > max_pixels:
         if abs(aspect_ratio - 16/9) < aspect_ratio_tolerance:
             scale_filter = "scale=1920:1080"
-            print(f"16:9 超限视频: {width}x{height} -> 1920x1080")
+            log.info(f"16:9 超限视频: {width}x{height} -> 1920x1080")
         elif abs(reverse_ratio - 16/9) < aspect_ratio_tolerance:
             scale_filter = "scale=1080:1920"
-            print(f"9:16 超限视频: {width}x{height} -> 1080x1920")
+            log.info(f"9:16 超限视频: {width}x{height} -> 1080x1920")
         else:
             scale_factor = (max_pixels / pixels) ** 0.5
             new_w = int(width * scale_factor)
             new_h = int(height * scale_factor)
             scale_filter = f"scale={new_w}:{new_h}"
-            print(f"自适配缩放: {width}x{height} -> {new_w}x{new_h}")
+            log.info(f"自适配缩放: {width}x{height} -> {new_w}x{new_h}")
 
     # 构建滤镜链
     vf_components = []
     if scale_filter:
         vf_components.append(scale_filter)
     if subs_exists:
-        # ffmpeg 字幕路径转义
         subs_path_ffmpeg = subs_path.replace('\\', '/').replace(':', '\\:')
         vf_components.append(f"subtitles='{subs_path_ffmpeg}'")
-        print(f"检测到字幕文件: {subs_path}")
+        log.info(f"检测到字幕文件: {subs_path}")
 
     # 构建转码命令
     temp_output = os.path.join(target_subfolder, f"{video_name}_part.mp4")
     ffmpeg_cmd = ['ffmpeg']
-    
+
     if input_params:
         ffmpeg_cmd.extend(input_params.split())
-    
+
     ffmpeg_cmd.extend(['-i', video_path])
-    
+
     if vf_components:
         ffmpeg_cmd.extend(['-vf', ','.join(vf_components)])
-    
+
     ffmpeg_cmd.extend(ffmpeg_params.split())
     ffmpeg_cmd.extend(['-y', temp_output])
 
     # 执行转码
-    print("执行命令:", ' '.join(ffmpeg_cmd))
+    log.info("执行命令: " + ' '.join(ffmpeg_cmd))
     subprocess.run(ffmpeg_cmd, check=True)
 
     # 重命名最终文件
     final_output = os.path.join(target_subfolder, f"{video_name}.mp4")
     os.rename(temp_output, final_output)
-    print(f"转码完成: {final_output}\n")
+    log.info(f"转码完成: {final_output}\n")
+
 
 # 主处理流程
 if __name__ == '__main__':
     default_source = os.path.join(os.getcwd(), source_folder)
-    used_subtitles = set()  # 记录已被内嵌的视频字幕文件
+    used_subtitles = set()
+
+    log.info("=" * 60)
+    log.info("开始处理")
+    log.info("=" * 60)
 
     for root, dirs, files in os.walk(default_source):
         for file in files:
             path = os.path.join(root, file)
-            # 视频文件处理
-            if any(file.endswith(ext) for ext in video_extensions):
+            # 视频文件处理 (case-insensitive extension check)
+            if any(file.lower().endswith(ext) for ext in video_extensions):
                 process_video(path, target_folder)
-                # 记录已用字幕
+                # 记录已用字幕 (case-insensitive)
                 video_name, _ = os.path.splitext(file)
-                subs_path = os.path.join(root, f"{video_name}.ass")
-                if os.path.isfile(subs_path):
+                subs_path = find_subtitle(root, video_name)
+                if subs_path:
                     used_subtitles.add(os.path.abspath(subs_path))
             else:
-                # 跳过忽略文件
-                if file in ignore_files:
+                # 跳过忽略文件 (case-insensitive)
+                if file.lower() in ignore_files:
                     continue
                 # 跳过已被合并的字幕文件
                 if os.path.abspath(path) in used_subtitles:
@@ -165,5 +191,9 @@ if __name__ == '__main__':
                 target_dir = os.path.join(target_folder, rel_path)
                 os.makedirs(target_dir, exist_ok=True)
                 shutil.copy2(path, target_dir)
+                log.info(f"复制文件: {file} -> {target_dir}")
 
-    print("所有处理已完成！")
+    log.info("=" * 60)
+    log.info("所有处理已完成！")
+    log.info(f"日志已保存至: {log_filename}")
+    log.info("=" * 60)
