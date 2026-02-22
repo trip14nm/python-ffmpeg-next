@@ -24,7 +24,8 @@ max_pixels = config['resolution_threshold']
 aspect_ratio_tolerance = 0.1
 
 # 日志配置
-log_filename = datetime.now().strftime("process_%Y%m%d_%H%M%S.log")
+os.makedirs('logs', exist_ok=True)
+log_filename = os.path.join('logs', datetime.now().strftime("process_%Y%m%d_%H%M%S.log"))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(message)s',
