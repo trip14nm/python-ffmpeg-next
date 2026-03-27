@@ -15,13 +15,22 @@ with open('config.yaml', encoding='utf-8') as config_file:
     config = yaml.safe_load(config_file)
 
 video_extensions = [ext.lower() for ext in config['video_extensions']]  # normalize to lowercase
-ffmpeg_params = config['encode_params']
-input_params = config['decode_params']
+
+# encode/decode params 支持列表和字符串两种格式
+def parse_params(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    return value.split()
+
+ffmpeg_params = parse_params(config['encode_params'])
+input_params = parse_params(config['decode_params'])
+
 ignore_files = [f.lower() for f in config['ignore_files']]  # normalize to lowercase
 
-# 分辨率阈值和长宽比容差
+# 分辨率阈值
 max_pixels = config['resolution_threshold']
-aspect_ratio_tolerance = 0.1
 
 # 日志配置
 os.makedirs('logs', exist_ok=True)
@@ -36,6 +45,12 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger()
+
+# 检测 ffmpeg 和 ffprobe 是否可用
+for tool in ("ffmpeg", "ffprobe"):
+    if not shutil.which(tool):
+        log.error(f"未找到 {tool}，请确认已安装并添加到 PATH 后重试")
+        raise SystemExit(1)
 
 
 def get_video_resolution(video_path):
@@ -63,22 +78,42 @@ def get_video_resolution(video_path):
     return None, None
 
 
-def check_existing_video(target_folder, video_name, video_ext):
-    """检查目标文件夹中是否存在完整的目标视频文件"""
-    expected_filename = f"{video_name}{video_ext}"
-    for root, _, files in os.walk(target_folder):
-        if expected_filename in files:
-            return True
-    return False
+def check_existing_video(target_subfolder, video_name):
+    """检查对应子目录中是否已存在目标视频文件"""
+    return os.path.exists(os.path.join(target_subfolder, f"{video_name}.mp4"))
+
+
+def escape_subtitle_path(path):
+    """
+    转义 ffmpeg subtitles filter 路径中的特殊字符。
+    ffmpeg vf 字符串中需要转义的字符：\ : ' [ ] , ;
+    """
+    path = path.replace('\\', '/')
+    for ch in (':', "'", '[', ']', ',', ';'):
+        path = path.replace(ch, f'\\{ch}')
+    return path
 
 
 def find_subtitle(video_dir, video_name):
-    """Case-insensitive search for a matching .ass subtitle file"""
+    """大小写不敏感地查找匹配的 .ass 字幕文件"""
     for f in os.listdir(video_dir):
         name, ext = os.path.splitext(f)
         if name.lower() == video_name.lower() and ext.lower() == '.ass':
             return os.path.join(video_dir, f)
     return None
+
+
+def collect_subtitles(source_folder):
+    """预扫描所有视频对应的字幕文件，返回绝对路径集合"""
+    subtitle_paths = set()
+    for root, _, files in os.walk(source_folder):
+        for file in files:
+            if any(file.lower().endswith(ext) for ext in video_extensions):
+                video_name, _ = os.path.splitext(file)
+                subs_path = find_subtitle(root, video_name)
+                if subs_path:
+                    subtitle_paths.add(os.path.abspath(subs_path))
+    return subtitle_paths
 
 
 def process_video(video_path, target_folder):
@@ -96,7 +131,7 @@ def process_video(video_path, target_folder):
     subs_exists = subs_path is not None
 
     # 跳过已存在文件
-    if check_existing_video(target_subfolder, video_name, '.mp4'):
+    if check_existing_video(target_subfolder, video_name):
         log.info(f"跳过已存在文件: {video_path}")
         return
 
@@ -108,31 +143,25 @@ def process_video(video_path, target_folder):
 
     # 分辨率处理逻辑
     pixels = width * height
-    aspect_ratio = width / height
-    reverse_ratio = height / width
     scale_filter = None
 
     if pixels > max_pixels:
-        if abs(aspect_ratio - 16/9) < aspect_ratio_tolerance:
-            scale_filter = "scale=1920:1080"
-            log.info(f"16:9 超限视频: {width}x{height} -> 1920x1080")
-        elif abs(reverse_ratio - 16/9) < aspect_ratio_tolerance:
-            scale_filter = "scale=1080:1920"
-            log.info(f"9:16 超限视频: {width}x{height} -> 1080x1920")
-        else:
-            scale_factor = (max_pixels / pixels) ** 0.5
-            new_w = int(width * scale_factor)
-            new_h = int(height * scale_factor)
-            scale_filter = f"scale={new_w}:{new_h}"
-            log.info(f"自适配缩放: {width}x{height} -> {new_w}x{new_h}")
+        # 用像素总量开方得到等比缩放系数，round 后强制对齐到 2 的倍数
+        # （yuv420p 要求宽高均为偶数，直接用 int() 截断会导致标准分辨率差几个像素）
+        # 例：3840x2160 -> scale_factor=0.5 -> new_w=1920, new_h=1080，完全精确
+        scale_factor = (max_pixels / pixels) ** 0.5
+        new_w = round(width * scale_factor / 2) * 2
+        new_h = round(height * scale_factor / 2) * 2
+        scale_filter = f"scale={new_w}:{new_h}"
+        log.info(f"缩放: {width}x{height} -> {new_w}x{new_h}")
 
     # 构建滤镜链
     vf_components = []
     if scale_filter:
         vf_components.append(scale_filter)
     if subs_exists:
-        subs_path_ffmpeg = subs_path.replace('\\', '/').replace(':', '\\:')
-        vf_components.append(f"subtitles='{subs_path_ffmpeg}'")
+        escaped_path = escape_subtitle_path(subs_path)
+        vf_components.append(f"subtitles='{escaped_path}'")
         log.info(f"检测到字幕文件: {subs_path}")
 
     # 构建转码命令
@@ -140,14 +169,14 @@ def process_video(video_path, target_folder):
     ffmpeg_cmd = ['ffmpeg']
 
     if input_params:
-        ffmpeg_cmd.extend(input_params.split())
+        ffmpeg_cmd.extend(input_params)
 
     ffmpeg_cmd.extend(['-i', video_path])
 
     if vf_components:
         ffmpeg_cmd.extend(['-vf', ','.join(vf_components)])
 
-    ffmpeg_cmd.extend(ffmpeg_params.split())
+    ffmpeg_cmd.extend(ffmpeg_params)
     ffmpeg_cmd.extend(['-y', temp_output])
 
     # 执行转码
@@ -163,11 +192,13 @@ def process_video(video_path, target_folder):
 # 主处理流程
 if __name__ == '__main__':
     default_source = os.path.join(os.getcwd(), source_folder)
-    used_subtitles = set()
 
     log.info("=" * 60)
     log.info("开始处理")
     log.info("=" * 60)
+
+    # 预扫描所有将被合并的字幕文件
+    used_subtitles = collect_subtitles(default_source)
 
     for root, dirs, files in os.walk(default_source):
         for file in files:
@@ -175,11 +206,6 @@ if __name__ == '__main__':
             # 视频文件处理 (case-insensitive extension check)
             if any(file.lower().endswith(ext) for ext in video_extensions):
                 process_video(path, target_folder)
-                # 记录已用字幕 (case-insensitive)
-                video_name, _ = os.path.splitext(file)
-                subs_path = find_subtitle(root, video_name)
-                if subs_path:
-                    used_subtitles.add(os.path.abspath(subs_path))
             else:
                 # 跳过忽略文件 (case-insensitive)
                 if file.lower() in ignore_files:
