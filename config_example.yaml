@@ -20,8 +20,8 @@ ignore_files:
   - 'Thumbs.db'
   - '.DS_Store'
 
-resolution_threshold: 2073600  # 1920x1080:2073600 / 2560×1440:3686400
+resolution_threshold: 2073600  # 1920x1080:2073600 / 2560×1440:3686400 / 3840x2160:8294400
 
-decode_params: ''  # -hwaccel dxva2
+decode_params: # -hwaccel auto
 
 encode_params: -c:v libx265 -preset fast -crf 21 -x265-params min-keyint=5:bframes=4:scenecut=50:open-gop=0:rc-lookahead=40:lookahead-slices=0:me=hex:subme=2:merange=57:ref=3:max-merge=3:no-strong-intra-smoothing=1:no-sao=1:selective-sao=0 -pix_fmt yuv420p10le -c:a copy
