@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 import yaml
@@ -10,10 +11,27 @@ from datetime import datetime
 source_folder = 'input'
 target_folder = 'output'
 
-# 读取配置文件
-with open('config.yaml', encoding='utf-8') as config_file:
-    config = yaml.safe_load(config_file)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+default_config_path = os.path.join(script_dir, 'config.yaml')
+example_config_path = os.path.join(script_dir, 'config_example.yaml')
 
+def load_config(config_path=None):
+    path = config_path or default_config_path
+    if not os.path.exists(path):
+        if path == default_config_path and os.path.exists(example_config_path):
+            print('Warning: 未找到 config.yaml，正在使用 config_example.yaml 作为默认配置。')
+            path = example_config_path
+        else:
+            raise FileNotFoundError(f'未找到配置文件: {path}')
+    with open(path, encoding='utf-8') as config_file:
+        config = yaml.safe_load(config_file) or {}
+    required_keys = ['video_extensions', 'ignore_files', 'resolution_threshold', 'decode_params', 'encode_params']
+    missing = [key for key in required_keys if key not in config]
+    if missing:
+        raise KeyError(f"缺少配置项: {', '.join(missing)}")
+    return config
+
+config = load_config()
 video_extensions = [ext.lower() for ext in config['video_extensions']]  # normalize to lowercase
 
 # encode/decode params 支持列表和字符串两种格式
@@ -84,7 +102,7 @@ def check_existing_video(target_subfolder, video_name):
 
 
 def escape_subtitle_path(path):
-    """
+    r"""
     转义 ffmpeg subtitles filter 路径中的特殊字符。
     ffmpeg vf 字符串中需要转义的字符：\ : ' [ ] , ;
     """
@@ -191,10 +209,33 @@ def process_video(video_path, target_folder):
 
 # 主处理流程
 if __name__ == '__main__':
-    default_source = os.path.join(os.getcwd(), source_folder)
+    parser = argparse.ArgumentParser(description='批量转码视频并合并同名字幕')
+    parser.add_argument('--config', help='配置文件路径，默认使用 config.yaml 或 config_example.yaml')
+    parser.add_argument('--source', default=source_folder, help='输入源目录，默认 input')
+    parser.add_argument('--target', default=target_folder, help='输出目标目录，默认 output')
+    args = parser.parse_args()
+
+    if args.config:
+        config = load_config(args.config)
+        video_extensions = [ext.lower() for ext in config['video_extensions']]
+        ffmpeg_params = parse_params(config['encode_params'])
+        input_params = parse_params(config['decode_params'])
+        ignore_files = [f.lower() for f in config['ignore_files']]
+        max_pixels = config['resolution_threshold']
+
+    default_source = os.path.abspath(args.source)
+    source_folder = default_source
+    target_folder = os.path.abspath(args.target)
+
+    if not os.path.isdir(default_source):
+        os.makedirs(default_source, exist_ok=True)
+        log.warning(f"源目录不存在，已创建: {default_source}。请将要处理的视频文件放入该目录后重新运行。")
+        raise SystemExit(1)
+
+    os.makedirs(target_folder, exist_ok=True)
 
     log.info("=" * 60)
-    log.info("开始处理")
+    log.info(f"开始处理: {default_source} -> {target_folder}")
     log.info("=" * 60)
 
     # 预扫描所有将被合并的字幕文件

@@ -19,6 +19,7 @@ video_extensions:
 ignore_files:
   - 'Thumbs.db'
   - '.DS_Store'
+  - '.gitkeep'
 
 resolution_threshold: 2073600  # 1920x1080:2073600 / 2560×1440:3686400 / 3840x2160:8294400
 
